@@ -14,6 +14,18 @@ try {
         }
     }
 
+    // Ensure columns exist on products table if upgraded
+    $cols = $pdo->query("DESCRIBE products")->fetchAll(PDO::FETCH_COLUMN);
+    if (!in_array('brand', $cols)) {
+        $pdo->exec("ALTER TABLE products ADD COLUMN `brand` VARCHAR(255) DEFAULT 'Perfume Hub' AFTER `name` ");
+    }
+    if (!in_array('mrp', $cols)) {
+        $pdo->exec("ALTER TABLE products ADD COLUMN `mrp` DECIMAL(10,2) NOT NULL DEFAULT 0.00 AFTER `category` ");
+    }
+    if (!in_array('image_urls', $cols)) {
+        $pdo->exec("ALTER TABLE products ADD COLUMN `image_urls` TEXT AFTER `image_url` ");
+    }
+
     // 2. Populate Sample Fragrances if table is empty
     $check_stmt = $pdo->query("SELECT COUNT(*) FROM fragrances");
     if ($check_stmt->fetchColumn() == 0) {
@@ -28,7 +40,6 @@ try {
             'France', 2010, 32000.00, 28500.00, 10.94, 25, 'Ready', 'Published', 100, 1)");
         $f1_id = $pdo->lastInsertId();
 
-        // Notes for Creed Aventus
         $pdo->exec("INSERT INTO `fragrance_notes` (`fragrance_id`, `note_stage`, `ingredient_name`, `display_position`) VALUES
             ($f1_id, 'opening', 'Italian Bergamot', 1),
             ($f1_id, 'opening', 'Pink Pepper', 2),
@@ -39,21 +50,20 @@ try {
             ($f1_id, 'dry_down', 'Ambergris', 2),
             ($f1_id, 'dry_down', 'Cedarwood', 3)");
 
-        // Volumes for Creed Aventus
         $pdo->exec("INSERT INTO `fragrance_volumes` (`fragrance_id`, `volume_label`, `volume_ml`, `volume_price`, `volume_list_price`, `is_default_volume`) VALUES
             ($f1_id, '50 ml', 50, 18500.00, 21000.00, 0),
             ($f1_id, '100 ml', 100, 28500.00, 32000.00, 1),
             ($f1_id, '200 ml', 200, 45000.00, 50000.00, 0)");
 
-        // Editions for Creed Aventus
         $pdo->exec("INSERT INTO `fragrance_editions` (`fragrance_id`, `edition_title`, `edition_details`) VALUES
             ($f1_id, 'Retail Pack', 'Standard luxury box with authenticity certificate'),
             ($f1_id, 'Tester Pack', 'Original tester in plain unsealed white box'),
             ($f1_id, 'Gift Box', 'Includes 100ml Parfum + 10ml Travel Spray')");
 
-        // Media for Creed Aventus
         $pdo->exec("INSERT INTO `fragrance_media` (`fragrance_id`, `remote_image_address`, `media_origin`, `image_type`, `featured_image`) VALUES
-            ($f1_id, 'https://images.unsplash.com/photo-1594035910387-fea47794261f?w=600&auto=format&fit=crop&q=80', 'external_link', 'Main', 1)");
+            ($f1_id, 'https://images.unsplash.com/photo-1594035910387-fea47794261f?w=600&auto=format&fit=crop&q=80', 'external_link', 'Main', 1),
+            ($f1_id, 'https://images.unsplash.com/photo-1523293182086-7651a899d37f?w=600&auto=format&fit=crop&q=80', 'external_link', 'Gallery', 0),
+            ($f1_id, 'https://images.unsplash.com/photo-1541643600914-78b084683601?w=600&auto=format&fit=crop&q=80', 'external_link', 'Gallery', 0)");
 
         // Sample Fragrance 2: Tom Ford Black Orchid
         $pdo->exec("INSERT INTO `fragrances` 
@@ -84,7 +94,8 @@ try {
             ($f2_id, 'Tester Pack', 'Tester unit direct from manufacturer')");
 
         $pdo->exec("INSERT INTO `fragrance_media` (`fragrance_id`, `remote_image_address`, `media_origin`, `image_type`, `featured_image`) VALUES
-            ($f2_id, 'https://images.unsplash.com/photo-1523293182086-7651a899d37f?w=600&auto=format&fit=crop&q=80', 'external_link', 'Main', 1)");
+            ($f2_id, 'https://images.unsplash.com/photo-1523293182086-7651a899d37f?w=600&auto=format&fit=crop&q=80', 'external_link', 'Main', 1),
+            ($f2_id, 'https://images.unsplash.com/photo-1592945403244-b3fbafd7f539?w=600&auto=format&fit=crop&q=80', 'external_link', 'Gallery', 0)");
 
         // Sample Fragrance 3: Dior Sauvage Elixir
         $pdo->exec("INSERT INTO `fragrances` 
@@ -144,7 +155,17 @@ try {
             ($f4_id, 'https://images.unsplash.com/photo-1592945403244-b3fbafd7f539?w=600&auto=format&fit=crop&q=80', 'external_link', 'Main', 1)");
     }
 
-    echo "✅ Database initialized successfully! All 27 tables and seed data created.<br><a href='index.php'>Go to Perfume Hub Storefront</a>";
+    // Populate Sample Products if table empty
+    $prod_chk = $pdo->query("SELECT COUNT(*) FROM products");
+    if ($prod_chk->fetchColumn() == 0) {
+        $pdo->exec("INSERT INTO products (`name`, `brand`, `category`, `mrp`, `price`, `description`, `image_url`, `image_urls`) VALUES
+            ('Creed Aventus', 'Creed', 'Men', 32000.00, 28500.00, 'Luxury royal perfume for men', 'https://images.unsplash.com/photo-1594035910387-fea47794261f?w=600', 'https://images.unsplash.com/photo-1594035910387-fea47794261f?w=600\nhttps://images.unsplash.com/photo-1523293182086-7651a899d37f?w=600'),
+            ('Tom Ford Black Orchid', 'Tom Ford', 'Unisex', 18500.00, 15900.00, 'Sensual dark orchid fragrance', 'https://images.unsplash.com/photo-1523293182086-7651a899d37f?w=600', 'https://images.unsplash.com/photo-1523293182086-7651a899d37f?w=600\nhttps://images.unsplash.com/photo-1592945403244-b3fbafd7f539?w=600'),
+            ('Dior Sauvage Elixir', 'Dior', 'Men', 16000.00, 14200.00, 'Concentrated spicy fragrance', 'https://images.unsplash.com/photo-1541643600914-78b084683601?w=600', 'https://images.unsplash.com/photo-1541643600914-78b084683601?w=600'),
+            ('Lattafa Khamrah', 'Lattafa', 'Unisex', 4500.00, 2999.00, 'Warm oriental spicy gourmet scent', 'https://images.unsplash.com/photo-1592945403244-b3fbafd7f539?w=600', 'https://images.unsplash.com/photo-1592945403244-b3fbafd7f539?w=600')");
+    }
+
+    echo "✅ Database initialized successfully! All tables and columns ready.<br><a href='index.php'>Go to Perfume Hub Storefront</a>";
 } catch (PDOException $e) {
     die("❌ Setup Failed: " . $e->getMessage());
 }
