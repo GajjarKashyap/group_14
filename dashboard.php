@@ -17,8 +17,19 @@ if (isset($_GET['action']) && $_GET['action'] === 'lock') {
 // Handle Unlock Action
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['unlock_admin'])) {
     $entered_pass = trim($_POST['passcode'] ?? '');
-    if ($entered_pass === $admin_passcode || (isset($_SESSION['user_id']) && $entered_pass !== '')) {
+    $admin_name = trim($_POST['admin_name'] ?? 'Associate Admin');
+    $super_passcode = "superadmin789";
+
+    if ($entered_pass === $super_passcode) {
         $_SESSION['admin_authenticated'] = true;
+        $_SESSION['is_super_admin'] = true;
+        $_SESSION['admin_name'] = !empty($admin_name) ? $admin_name : 'Super Admin';
+        header("Location: dashboard.php");
+        exit();
+    } elseif ($entered_pass === $admin_passcode || (isset($_SESSION['user_id']) && $entered_pass !== '')) {
+        $_SESSION['admin_authenticated'] = true;
+        $_SESSION['is_super_admin'] = false;
+        $_SESSION['admin_name'] = !empty($admin_name) ? $admin_name : 'Associate Admin';
         header("Location: dashboard.php");
         exit();
     } else {
@@ -27,6 +38,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['unlock_admin'])) {
 }
 
 $is_admin = isset($_SESSION['admin_authenticated']) && $_SESSION['admin_authenticated'] === true;
+$is_super_admin = isset($_SESSION['is_super_admin']) && $_SESSION['is_super_admin'] === true;
 
 // -------------------------------------------------------------
 // IF NOT AUTHENTICATED: DISPLAY LUXURY PASSCODE LOGIN GATE
@@ -46,10 +58,14 @@ if (!$is_admin) {
                     <?php echo $message; ?>
 
                     <form action="dashboard.php" method="POST">
-                        <div class="mb-4">
+                        <div class="mb-3">
                             <label class="form-label text-muted small fw-bold">Admin Passcode *</label>
                             <input type="password" name="passcode" class="form-control form-control-lg text-center bg-light border-0" required placeholder="••••••••" autofocus>
                             <small class="text-muted d-block mt-2 fs-7">Default passcode: <code class="text-gold fw-bold">admin123</code></small>
+                        </div>
+                        <div class="mb-4">
+                            <label class="form-label text-muted small fw-bold">Your Admin Name *</label>
+                            <input type="text" name="admin_name" class="form-control form-control-lg text-center bg-light border-0" required placeholder="e.g. Kashyap, Rohan" value="<?php echo htmlspecialchars($_SESSION['admin_name'] ?? ''); ?>">
                         </div>
                         <button type="submit" name="unlock_admin" class="btn btn-gold btn-lg w-100 py-3 fw-bold rounded-pill shadow-sm"><i class="fa-solid fa-key me-2"></i> Unlock Admin Panel</button>
                     </form>
@@ -100,8 +116,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['add_perfume'])) {
     $all_urls_string = mysqli_real_escape_string($conn, implode("\n", $image_urls_array));
 
     if (!empty($name) && $price > 0) {
-        $sql = "INSERT INTO products (name, brand, category, mrp, price, description, image_url, image_urls) 
-                VALUES ('$name', '$brand', '$category', $mrp, $price, '$description', '$primary_image_url', '$all_urls_string')";
+        $added_by = mysqli_real_escape_string($conn, $_SESSION['admin_name'] ?? 'System Admin');
+        $sql = "INSERT INTO products (name, brand, category, mrp, price, description, image_url, image_urls, added_by) 
+                VALUES ('$name', '$brand', '$category', $mrp, $price, '$description', '$primary_image_url', '$all_urls_string', '$added_by')";
         if (mysqli_query($conn, $sql)) {
             $product_id = mysqli_insert_id($conn);
 
@@ -224,8 +241,238 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_order_status']
     }
 }
 
+// -------------------------------------------------------------
+// REMOTE SYNC ENGINE POST/GET HANDLERS
+// -------------------------------------------------------------
+
+// GET Handler: Export Products JSON
+if (isset($_GET['action']) && $_GET['action'] === 'export_json') {
+    $filter_added_by = isset($_GET['export_added_by']) ? mysqli_real_escape_string($conn, $_GET['export_added_by']) : '';
+    $export_query = "SELECT * FROM products";
+    if (!empty($filter_added_by)) {
+        $export_query .= " WHERE added_by = '$filter_added_by'";
+    }
+    $export_res = mysqli_query($conn, $export_query);
+    $export_data = [];
+    if ($export_res) {
+        while ($row = mysqli_fetch_assoc($export_res)) {
+            $export_data[] = $row;
+        }
+    }
+    header('Content-Type: application/json');
+    header('Content-Disposition: attachment; filename="perfume_export_' . date('Y-m-d') . '.json"');
+    echo json_encode($export_data, JSON_PRETTY_PRINT);
+    exit();
+}
+
+// POST Handler: Upload JSON Export File for Sync Review
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['upload_json_file'])) {
+    if (isset($_FILES['json_file']) && $_FILES['json_file']['error'] === UPLOAD_ERR_OK) {
+        $json_str = file_get_contents($_FILES['json_file']['tmp_name']);
+        $decoded = json_decode($json_str, true);
+        if (is_array($decoded)) {
+            $_SESSION['import_queue'] = $decoded;
+            $message = "<div class='alert alert-success alert-dismissible fade show rounded-3 py-2 small mb-3'><i class='fa-solid fa-cloud-arrow-up me-2'></i> JSON file successfully imported into review queue! <button type='button' class='btn-close' data-bs-dismiss='alert'></button></div>";
+        } else {
+            $message = "<div class='alert alert-danger alert-dismissible fade show rounded-3 py-2 small mb-3'><i class='fa-solid fa-circle-xmark me-2'></i> Invalid JSON structure. Please upload a valid exported perfume file. <button type='button' class='btn-close' data-bs-dismiss='alert'></button></div>";
+        }
+    }
+}
+
+// POST Handler: Approve Individual Import Item
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['approve_import_item'])) {
+    $item_idx = intval($_POST['item_index']);
+    if (isset($_SESSION['import_queue'][$item_idx])) {
+        $item = $_SESSION['import_queue'][$item_idx];
+        $name = mysqli_real_escape_string($conn, $item['name']);
+        $brand = mysqli_real_escape_string($conn, $item['brand'] ?? 'Perfume Hub');
+        $category = mysqli_real_escape_string($conn, $item['category'] ?? 'Unisex');
+        $mrp = floatval($item['mrp'] ?? 0);
+        $price = floatval($item['price'] ?? 0);
+        $description = mysqli_real_escape_string($conn, $item['description'] ?? '');
+        $primary_image_url = mysqli_real_escape_string($conn, $item['image_url'] ?? '');
+        $all_urls_string = mysqli_real_escape_string($conn, $item['image_urls'] ?? '');
+        $added_by = mysqli_real_escape_string($conn, $item['added_by'] ?? 'Imported Admin');
+
+        // Check duplicate
+        $check_dup = mysqli_query($conn, "SELECT id FROM products WHERE name = '$name' AND brand = '$brand' LIMIT 1");
+        if ($check_dup && mysqli_num_rows($check_dup) > 0) {
+            $dup_row = mysqli_fetch_assoc($check_dup);
+            $prod_id = $dup_row['id'];
+            mysqli_query($conn, "UPDATE products SET category='$category', mrp=$mrp, price=$price, description='$description', image_url='$primary_image_url', image_urls='$all_urls_string', added_by='$added_by' WHERE id=$prod_id");
+        } else {
+            mysqli_query($conn, "INSERT INTO products (name, brand, category, mrp, price, description, image_url, image_urls, added_by) 
+                                 VALUES ('$name', '$brand', '$category', $mrp, $price, '$description', '$primary_image_url', '$all_urls_string', '$added_by')");
+            $prod_id = mysqli_insert_id($conn);
+        }
+
+        // Sync Lookup
+        $check_house = mysqli_query($conn, "SELECT house_id FROM perfume_houses WHERE LOWER(house_name) = LOWER('$brand') LIMIT 1");
+        if ($check_house && mysqli_num_rows($check_house) > 0) {
+            $house_row = mysqli_fetch_assoc($check_house);
+            $house_id = $house_row['house_id'];
+        } else {
+            mysqli_query($conn, "INSERT INTO perfume_houses (house_name) VALUES ('$brand')");
+            $house_id = mysqli_insert_id($conn);
+        }
+
+        $code = 'PH-' . strtoupper(substr(preg_replace('/[^a-zA-Z]/', '', $brand), 0, 3)) . '-' . sprintf('%04d', $prod_id);
+        $discount_rate = ($mrp > $price) ? round((($mrp - $price) / $mrp) * 100, 2) : 0;
+
+        mysqli_query($conn, "INSERT INTO fragrances (fragrance_id, fragrance_code, fragrance_name, house_id, audience, summary, list_price, offer_price, discount_rate, available_units) 
+                             VALUES ($prod_id, '$code', '$name', $house_id, '$category', '$description', $mrp, $price, $discount_rate, 50)
+                             ON DUPLICATE KEY UPDATE audience='$category', summary='$description', list_price=$mrp, offer_price=$price, discount_rate=$discount_rate");
+
+        mysqli_query($conn, "DELETE FROM fragrance_media WHERE fragrance_id = $prod_id");
+        $image_urls_array = !empty($all_urls_string) ? explode("\n", $all_urls_string) : [$primary_image_url];
+        foreach ($image_urls_array as $idx => $remote_url) {
+            $esc_url = mysqli_real_escape_string($conn, trim($remote_url));
+            if (!empty($esc_url)) {
+                $is_featured = ($idx === 0) ? 1 : 0;
+                mysqli_query($conn, "INSERT INTO fragrance_media (fragrance_id, remote_image_address, media_origin, image_type, featured_image) 
+                                     VALUES ($prod_id, '$esc_url', 'external_link', 'Main', $is_featured)");
+            }
+        }
+
+        unset($_SESSION['import_queue'][$item_idx]);
+        $message = "<div class='alert alert-success alert-dismissible fade show rounded-3 py-2 small mb-3'><i class='fa-solid fa-circle-check me-2'></i> Successfully imported & published <strong>$name</strong>! <button type='button' class='btn-close' data-bs-dismiss='alert'></button></div>";
+    }
+}
+
+// POST Handler: Bulk Approve All Imports
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['approve_all_imports'])) {
+    if (!empty($_SESSION['import_queue']) && is_array($_SESSION['import_queue'])) {
+        $success_count = 0;
+        foreach ($_SESSION['import_queue'] as $item) {
+            $name = mysqli_real_escape_string($conn, $item['name']);
+            $brand = mysqli_real_escape_string($conn, $item['brand'] ?? 'Perfume Hub');
+            $category = mysqli_real_escape_string($conn, $item['category'] ?? 'Unisex');
+            $mrp = floatval($item['mrp'] ?? 0);
+            $price = floatval($item['price'] ?? 0);
+            $description = mysqli_real_escape_string($conn, $item['description'] ?? '');
+            $primary_image_url = mysqli_real_escape_string($conn, $item['image_url'] ?? '');
+            $all_urls_string = mysqli_real_escape_string($conn, $item['image_urls'] ?? '');
+            $added_by = mysqli_real_escape_string($conn, $item['added_by'] ?? 'Imported Admin');
+
+            $check_dup = mysqli_query($conn, "SELECT id FROM products WHERE name = '$name' AND brand = '$brand' LIMIT 1");
+            if ($check_dup && mysqli_num_rows($check_dup) > 0) {
+                $dup_row = mysqli_fetch_assoc($check_dup);
+                $prod_id = $dup_row['id'];
+                mysqli_query($conn, "UPDATE products SET category='$category', mrp=$mrp, price=$price, description='$description', image_url='$primary_image_url', image_urls='$all_urls_string', added_by='$added_by' WHERE id=$prod_id");
+            } else {
+                mysqli_query($conn, "INSERT INTO products (name, brand, category, mrp, price, description, image_url, image_urls, added_by) 
+                                     VALUES ('$name', '$brand', '$category', $mrp, $price, '$description', '$primary_image_url', '$all_urls_string', '$added_by')");
+                $prod_id = mysqli_insert_id($conn);
+            }
+
+            $check_house = mysqli_query($conn, "SELECT house_id FROM perfume_houses WHERE LOWER(house_name) = LOWER('$brand') LIMIT 1");
+            if ($check_house && mysqli_num_rows($check_house) > 0) {
+                $house_row = mysqli_fetch_assoc($check_house);
+                $house_id = $house_row['house_id'];
+            } else {
+                mysqli_query($conn, "INSERT INTO perfume_houses (house_name) VALUES ('$brand')");
+                $house_id = mysqli_insert_id($conn);
+            }
+
+            $code = 'PH-' . strtoupper(substr(preg_replace('/[^a-zA-Z]/', '', $brand), 0, 3)) . '-' . sprintf('%04d', $prod_id);
+            $discount_rate = ($mrp > $price) ? round((($mrp - $price) / $mrp) * 100, 2) : 0;
+
+            mysqli_query($conn, "INSERT INTO fragrances (fragrance_id, fragrance_code, fragrance_name, house_id, audience, summary, list_price, offer_price, discount_rate, available_units) 
+                                 VALUES ($prod_id, '$code', '$name', $house_id, '$category', '$description', $mrp, $price, $discount_rate, 50)
+                                 ON DUPLICATE KEY UPDATE audience='$category', summary='$description', list_price=$mrp, offer_price=$price, discount_rate=$discount_rate");
+
+            mysqli_query($conn, "DELETE FROM fragrance_media WHERE fragrance_id = $prod_id");
+            $image_urls_array = !empty($all_urls_string) ? explode("\n", $all_urls_string) : [$primary_image_url];
+            foreach ($image_urls_array as $idx => $remote_url) {
+                $esc_url = mysqli_real_escape_string($conn, trim($remote_url));
+                if (!empty($esc_url)) {
+                    $is_featured = ($idx === 0) ? 1 : 0;
+                    mysqli_query($conn, "INSERT INTO fragrance_media (fragrance_id, remote_image_address, media_origin, image_type, featured_image) 
+                                         VALUES ($prod_id, '$esc_url', 'external_link', 'Main', $is_featured)");
+                }
+            }
+            $success_count++;
+        }
+        $_SESSION['import_queue'] = [];
+        $message = "<div class='alert alert-success alert-dismissible fade show rounded-3 py-2 small mb-3'><i class='fa-solid fa-circle-check me-2'></i> Successfully approved & merged <strong>$success_count</strong> remote products! <button type='button' class='btn-close' data-bs-dismiss='alert'></button></div>";
+    }
+}
+
+// POST Handler: Clear Review Queue
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['clear_import_queue'])) {
+    $_SESSION['import_queue'] = [];
+    $message = "<div class='alert alert-secondary alert-dismissible fade show rounded-3 py-2 small mb-3'>Import review queue cleared. <button type='button' class='btn-close' data-bs-dismiss='alert'></button></div>";
+}
+
+// POST Handler: Upload Master JSON Sync (For Sub-Admins to update their local machine)
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['upload_master_sync'])) {
+    if (isset($_FILES['master_json_file']) && $_FILES['master_json_file']['error'] === UPLOAD_ERR_OK) {
+        $json_str = file_get_contents($_FILES['master_json_file']['tmp_name']);
+        $decoded = json_decode($json_str, true);
+        if (is_array($decoded)) {
+            $success_count = 0;
+            foreach ($decoded as $item) {
+                $name = mysqli_real_escape_string($conn, $item['name']);
+                $brand = mysqli_real_escape_string($conn, $item['brand'] ?? 'Perfume Hub');
+                $category = mysqli_real_escape_string($conn, $item['category'] ?? 'Unisex');
+                $mrp = floatval($item['mrp'] ?? 0);
+                $price = floatval($item['price'] ?? 0);
+                $description = mysqli_real_escape_string($conn, $item['description'] ?? '');
+                $primary_image_url = mysqli_real_escape_string($conn, $item['image_url'] ?? '');
+                $all_urls_string = mysqli_real_escape_string($conn, $item['image_urls'] ?? '');
+                $added_by = mysqli_real_escape_string($conn, $item['added_by'] ?? 'Master Catalog');
+
+                $check_dup = mysqli_query($conn, "SELECT id FROM products WHERE name = '$name' AND brand = '$brand' LIMIT 1");
+                if ($check_dup && mysqli_num_rows($check_dup) > 0) {
+                    $dup_row = mysqli_fetch_assoc($check_dup);
+                    $prod_id = $dup_row['id'];
+                    mysqli_query($conn, "UPDATE products SET category='$category', mrp=$mrp, price=$price, description='$description', image_url='$primary_image_url', image_urls='$all_urls_string', added_by='$added_by' WHERE id=$prod_id");
+                } else {
+                    mysqli_query($conn, "INSERT INTO products (name, brand, category, mrp, price, description, image_url, image_urls, added_by) 
+                                         VALUES ('$name', '$brand', '$category', $mrp, $price, '$description', '$primary_image_url', '$all_urls_string', '$added_by')");
+                    $prod_id = mysqli_insert_id($conn);
+                }
+
+                $check_house = mysqli_query($conn, "SELECT house_id FROM perfume_houses WHERE LOWER(house_name) = LOWER('$brand') LIMIT 1");
+                if ($check_house && mysqli_num_rows($check_house) > 0) {
+                    $house_row = mysqli_fetch_assoc($check_house);
+                    $house_id = $house_row['house_id'];
+                } else {
+                    mysqli_query($conn, "INSERT INTO perfume_houses (house_name) VALUES ('$brand')");
+                    $house_id = mysqli_insert_id($conn);
+                }
+
+                $code = 'PH-' . strtoupper(substr(preg_replace('/[^a-zA-Z]/', '', $brand), 0, 3)) . '-' . sprintf('%04d', $prod_id);
+                $discount_rate = ($mrp > $price) ? round((($mrp - $price) / $mrp) * 100, 2) : 0;
+
+                mysqli_query($conn, "INSERT INTO fragrances (fragrance_id, fragrance_code, fragrance_name, house_id, audience, summary, list_price, offer_price, discount_rate, available_units) 
+                                     VALUES ($prod_id, '$code', '$name', $house_id, '$category', '$description', $mrp, $price, $discount_rate, 50)
+                                     ON DUPLICATE KEY UPDATE audience='$category', summary='$description', list_price=$mrp, offer_price=$price, discount_rate=$discount_rate");
+
+                mysqli_query($conn, "DELETE FROM fragrance_media WHERE fragrance_id = $prod_id");
+                $image_urls_array = !empty($all_urls_string) ? explode("\n", $all_urls_string) : [$primary_image_url];
+                foreach ($image_urls_array as $idx => $remote_url) {
+                    $esc_url = mysqli_real_escape_string($conn, trim($remote_url));
+                    if (!empty($esc_url)) {
+                        $is_featured = ($idx === 0) ? 1 : 0;
+                        mysqli_query($conn, "INSERT INTO fragrance_media (fragrance_id, remote_image_address, media_origin, image_type, featured_image) 
+                                             VALUES ($prod_id, '$esc_url', 'external_link', 'Main', $is_featured)");
+                    }
+                }
+                $success_count++;
+            }
+            $message = "<div class='alert alert-success alert-dismissible fade show rounded-3 py-2 small mb-3'><i class='fa-solid fa-circle-check me-2'></i> Catalog update complete! Merged <strong>$success_count</strong> products from master database. <button type='button' class='btn-close' data-bs-dismiss='alert'></button></div>";
+        } else {
+            $message = "<div class='alert alert-danger alert-dismissible fade show rounded-3 py-2 small mb-3'>Invalid JSON format.</div>";
+        }
+    }
+}
+
 // Active Tab handler (default: catalog)
 $active_tab = isset($_GET['tab']) ? $_GET['tab'] : 'catalog';
+if ($active_tab === 'sync' && !$is_super_admin) {
+    $active_tab = 'catalog';
+}
 
 $page_title = "Admin Control Panel - Inventory Management";
 require_once __DIR__ . '/includes/header.php';
@@ -278,6 +525,13 @@ require_once __DIR__ . '/includes/header.php';
                     <i class="fa-solid fa-users me-2"></i> Customer Directory
                 </a>
             </li>
+            <?php if ($is_super_admin): ?>
+            <li class="nav-item">
+                <a class="nav-link py-3 fw-bold rounded-3 <?php echo ($active_tab === 'sync') ? 'bg-gold text-white shadow-sm' : 'text-dark hover-gold-bg'; ?>" href="dashboard.php?tab=sync">
+                    <i class="fa-solid fa-rotate me-2"></i> Remote Sync Engine
+                </a>
+            </li>
+            <?php endif; ?>
         </ul>
     </div>
 
@@ -327,6 +581,8 @@ require_once __DIR__ . '/includes/header.php';
                 </select>
 
                 <a href="dashboard.php?tab=catalog" class="btn btn-outline-secondary btn-sm rounded-pill">Reset Filters</a>
+                <a href="dashboard.php?action=export_json&export_added_by=<?php echo urlencode($_SESSION['admin_name'] ?? ''); ?>" class="btn btn-outline-gold btn-sm rounded-pill" title="Download your local catalog additions as JSON backup"><i class="fa-solid fa-cloud-arrow-down me-1"></i> Download Local Backup</a>
+                <button type="button" class="btn btn-outline-gold btn-sm rounded-pill" data-bs-toggle="modal" data-bs-target="#syncMasterModal" title="Update local catalog from Master JSON"><i class="fa-solid fa-rotate me-1"></i> Sync from Master</button>
             </form>
 
             <div class="btn-group btn-group-sm">
@@ -369,8 +625,8 @@ require_once __DIR__ . '/includes/header.php';
                                             <img src="<?php echo htmlspecialchars(optimize_image_url($row['image_url'], 'thumbnail')); ?>" class="rounded-3 shadow-sm p-1" style="width: 55px; height: 55px; object-fit: contain; background-color: #fafafa;" loading="lazy">
                                         </td>
                                         <td>
-                                            <small class="text-gold text-uppercase fw-bold d-block fs-7"><?php echo htmlspecialchars($brand_name); ?></small>
                                             <strong class="text-dark brand-font"><?php echo htmlspecialchars($row['name']); ?></strong>
+                                            <span class="d-block text-muted fs-7"><i class="fa-solid fa-user-shield text-gold me-1"></i> Added by: <strong><?php echo htmlspecialchars($row['added_by'] ?? 'System Admin'); ?></strong></span>
                                         </td>
                                         <td>
                                             <span class="badge bg-light text-dark border rounded-pill px-3"><?php echo htmlspecialchars($row['category']); ?></span>
@@ -417,7 +673,8 @@ require_once __DIR__ . '/includes/header.php';
                         <div class="card card-custom h-100 p-3 rounded-4">
                             <img src="<?php echo htmlspecialchars(optimize_image_url($row['image_url'], 'card')); ?>" class="card-img-top rounded-3 p-2 mb-3" style="height: 180px; object-fit: contain; background-color: #fafafa;" loading="lazy">
                             <small class="text-gold text-uppercase fw-bold mb-1 fs-7"><?php echo htmlspecialchars($row['brand']); ?></small>
-                            <h6 class="fw-bold text-dark mb-2"><?php echo htmlspecialchars($row['name']); ?></h6>
+                            <h6 class="fw-bold text-dark mb-1"><?php echo htmlspecialchars($row['name']); ?></h6>
+                            <small class="text-muted d-block mb-2 fs-7"><i class="fa-solid fa-user-shield text-gold me-1"></i> Admin: <?php echo htmlspecialchars($row['added_by'] ?? 'System Admin'); ?></small>
                             <div class="d-flex align-items-baseline gap-2 mb-3">
                                 <span class="fs-5 fw-bold text-gold">₹<?php echo number_format($price_val, 2); ?></span>
                                 <small class="text-muted text-decoration-line-through">₹<?php echo number_format($mrp_val, 2); ?></small>
@@ -629,6 +886,149 @@ require_once __DIR__ . '/includes/header.php';
                 </table>
             </div>
         </div>
+    <!-- ========================================================= -->
+    <!-- TAB 5: REMOTE SYNC ENGINE -->
+    <!-- ========================================================= -->
+    <?php elseif ($active_tab === 'sync'): ?>
+        <?php
+        // Fetch list of active admins in products table for filtering exports
+        $admins_res = mysqli_query($conn, "SELECT DISTINCT added_by FROM products ORDER BY added_by ASC");
+        $admins_list = [];
+        if ($admins_res) {
+            while ($row = mysqli_fetch_assoc($admins_res)) {
+                $admins_list[] = $row['added_by'];
+            }
+        }
+        ?>
+        <div class="row g-4">
+            <!-- Left Column: Export Data (Offline Admin Node) -->
+            <div class="col-md-6">
+                <div class="card p-4 shadow-sm border-0 bg-white rounded-4 h-100">
+                    <h4 class="brand-font text-dark fw-bold mb-3"><i class="fa-solid fa-cloud-arrow-down text-gold me-2"></i> Export Local Data</h4>
+                    <p class="text-muted small">Working offline? Export products you or your friends added on this device into a JSON file, ready to share with the Super Admin.</p>
+                    
+                    <form action="dashboard.php" method="GET" class="mt-3">
+                        <input type="hidden" name="tab" value="sync">
+                        <input type="hidden" name="action" value="export_json">
+                        
+                        <div class="mb-4">
+                            <label class="form-label text-muted small fw-bold">Filter by Admin Name / Device</label>
+                            <select name="export_added_by" class="form-select bg-light border-0">
+                                <option value="">-- All Products (No Filter) --</option>
+                                <?php foreach ($admins_list as $admin_name): ?>
+                                    <option value="<?php echo htmlspecialchars($admin_name); ?>" <?php if (isset($_SESSION['admin_name']) && $admin_name === $_SESSION['admin_name']) echo 'selected'; ?>>
+                                        <?php echo htmlspecialchars($admin_name); ?>
+                                    </option>
+                                <?php endforeach; ?>
+                            </select>
+                        </div>
+                        
+                        <button type="submit" class="btn btn-gold w-100 py-3 fw-bold rounded-pill shadow-sm">
+                            <i class="fa-solid fa-download me-2"></i> Download Export JSON
+                        </button>
+                    </form>
+                </div>
+            </div>
+
+            <!-- Right Column: Import & Remote Review (Super Admin Role) -->
+            <div class="col-md-6">
+                <div class="card p-4 shadow-sm border-0 bg-white rounded-4 h-100">
+                    <h4 class="brand-font text-dark fw-bold mb-3"><i class="fa-solid fa-cloud-arrow-up text-gold me-2"></i> Import Remote Data</h4>
+                    <p class="text-muted small">Upload a JSON backup file received from another admin. Review their entries, check image links, and publish them to the master database.</p>
+                    
+                    <form action="dashboard.php?tab=sync" method="POST" enctype="multipart/form-data" class="mt-3">
+                        <div class="mb-4">
+                            <label class="form-label text-muted small fw-bold">Select JSON Backup File</label>
+                            <input type="file" name="json_file" class="form-control bg-light border-0" accept=".json" required>
+                        </div>
+                        
+                        <button type="submit" name="upload_json_file" class="btn btn-outline-gold w-100 py-3 fw-bold rounded-pill">
+                            <i class="fa-solid fa-upload me-2"></i> Upload to Review Queue
+                        </button>
+                    </form>
+                </div>
+            </div>
+
+            <!-- Full Width Review Queue Section -->
+            <div class="col-12">
+                <div class="card p-4 shadow-sm border-0 bg-white rounded-4 mt-3">
+                    <div class="d-flex flex-column flex-md-row justify-content-between align-items-md-center gap-3 mb-3 border-bottom pb-3">
+                        <div>
+                            <h4 class="brand-font text-dark fw-bold mb-1"><i class="fa-solid fa-clipboard-list text-gold me-2"></i> Remote Import Review Queue</h4>
+                            <p class="text-muted small mb-0">Products waiting for your review. Approve and publish to merge them into your catalog.</p>
+                        </div>
+                        <?php if (!empty($_SESSION['import_queue']) && count($_SESSION['import_queue']) > 0): ?>
+                            <div class="d-flex gap-2">
+                                <form action="dashboard.php?tab=sync" method="POST" class="d-inline">
+                                    <button type="submit" name="approve_all_imports" class="btn btn-success btn-sm rounded-pill px-3 fw-bold shadow-sm" onclick="return confirm('Approve and publish all items?');">
+                                        <i class="fa-solid fa-circle-check me-1"></i> Approve & Publish All
+                                    </button>
+                                </form>
+                                <form action="dashboard.php?tab=sync" method="POST" class="d-inline">
+                                    <button type="submit" name="clear_import_queue" class="btn btn-outline-danger btn-sm rounded-pill px-3">
+                                        <i class="fa-solid fa-circle-xmark me-1"></i> Clear Queue
+                                    </button>
+                                </form>
+                            </div>
+                        <?php endif; ?>
+                    </div>
+
+                    <div class="table-responsive">
+                        <table class="table align-middle mb-0">
+                            <thead>
+                                <tr class="text-muted small border-bottom">
+                                    <th>Preview</th>
+                                    <th>Product Name & Brand</th>
+                                    <th>Category</th>
+                                    <th>MRP (₹)</th>
+                                    <th>Price (₹)</th>
+                                    <th>Added By / Origin</th>
+                                    <th class="text-center">Action</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <?php if (!empty($_SESSION['import_queue']) && count($_SESSION['import_queue']) > 0): ?>
+                                    <?php foreach ($_SESSION['import_queue'] as $idx => $item): ?>
+                                        <tr class="border-bottom">
+                                            <td>
+                                                <img src="<?php echo htmlspecialchars(optimize_image_url($item['image_url'] ?? '', 'thumbnail')); ?>" class="rounded-3 border p-1" style="width: 50px; height: 50px; object-fit: contain; background-color: #fafafa;" onerror="this.src='https://images.unsplash.com/photo-1594035910387-fea47794261f?w=150';">
+                                            </td>
+                                            <td>
+                                                <small class="text-gold text-uppercase fw-bold d-block fs-7"><?php echo htmlspecialchars($item['brand'] ?? 'Perfume Hub'); ?></small>
+                                                <strong class="text-dark"><?php echo htmlspecialchars($item['name'] ?? 'Unnamed'); ?></strong>
+                                            </td>
+                                            <td>
+                                                <span class="badge bg-light text-dark border rounded-pill px-3"><?php echo htmlspecialchars($item['category'] ?? 'Unisex'); ?></span>
+                                            </td>
+                                            <td class="text-muted text-decoration-line-through">₹<?php echo number_format(floatval($item['mrp'] ?? 0), 2); ?></td>
+                                            <td class="text-gold fw-bold">₹<?php echo number_format(floatval($item['price'] ?? 0), 2); ?></td>
+                                            <td>
+                                                <span class="badge bg-gold text-white px-2 py-1 rounded-pill"><i class="fa-solid fa-user-shield me-1"></i> <?php echo htmlspecialchars($item['added_by'] ?? 'Unknown'); ?></span>
+                                            </td>
+                                            <td class="text-center">
+                                                <form action="dashboard.php?tab=sync" method="POST" class="d-inline">
+                                                    <input type="hidden" name="item_index" value="<?php echo $idx; ?>">
+                                                    <button type="submit" name="approve_import_item" class="btn btn-success btn-sm rounded-pill px-3 fw-bold">
+                                                        <i class="fa-solid fa-check me-1"></i> Approve & Publish
+                                                    </button>
+                                                </form>
+                                            </td>
+                                        </tr>
+                                    <?php endforeach; ?>
+                                <?php else: ?>
+                                    <tr>
+                                        <td colspan="7" class="text-center py-5 text-muted">
+                                            <i class="fa-solid fa-folder-open fa-2x text-gold mb-2 d-block"></i>
+                                            No products in review queue. Import a JSON backup file to populate.
+                                        </td>
+                                    </tr>
+                                <?php endif; ?>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
     <?php endif; ?>
 </div>
 
@@ -805,6 +1205,32 @@ require_once __DIR__ . '/includes/header.php';
                 <div class="modal-footer border-top p-3 bg-light">
                     <button type="button" class="btn btn-outline-secondary rounded-pill px-4" data-bs-dismiss="modal">Cancel</button>
                     <button type="submit" name="edit_perfume" class="btn btn-gold rounded-pill px-4 fw-bold"><i class="fa-solid fa-floppy-disk me-1"></i> Save Changes</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<!-- ========================================================= -->
+<!-- MODAL 3: SYNC FROM MASTER (For Sub-Admins) -->
+<!-- ========================================================= -->
+<div class="modal fade" id="syncMasterModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content border-0 shadow-lg rounded-4">
+            <div class="modal-header border-bottom py-3 bg-light">
+                <h5 class="modal-title brand-font text-dark"><i class="fa-solid fa-rotate text-gold me-2"></i> Sync from Master Catalog</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <form action="dashboard.php" method="POST" enctype="multipart/form-data">
+                <div class="modal-body p-4 text-center">
+                    <p class="text-muted small">Upload the master catalog JSON export file provided by the Super Admin to update your local inventory, prices, and settings.</p>
+                    <div class="mb-3">
+                        <input type="file" name="master_json_file" class="form-control bg-light border-0" accept=".json" required>
+                    </div>
+                </div>
+                <div class="modal-footer border-top p-3 bg-light">
+                    <button type="button" class="btn btn-outline-secondary rounded-pill px-4" data-bs-dismiss="modal">Cancel</button>
+                    <button type="submit" name="upload_master_sync" class="btn btn-gold rounded-pill px-4 fw-bold"><i class="fa-solid fa-cloud-arrow-up me-1"></i> Sync Database</button>
                 </div>
             </form>
         </div>

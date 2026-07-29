@@ -155,7 +155,8 @@ CREATE TABLE IF NOT EXISTS `products` (
   `description` TEXT,
   `image_url` TEXT,
   `image_urls` TEXT,
-  `availability` VARCHAR(50) DEFAULT 'Ready'
+  `availability` VARCHAR(50) DEFAULT 'Ready',
+  `added_by` VARCHAR(100) DEFAULT 'System Admin'
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- Seed Lookup Tables

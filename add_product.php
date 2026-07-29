@@ -44,8 +44,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['add_product'])) {
     $all_urls_string = mysqli_real_escape_string($conn, implode("\n", $image_urls_array));
 
     if (!empty($name) && $price > 0) { 
-        $sql = "INSERT INTO products (name, brand, category, mrp, price, description, image_url, image_urls) 
-                VALUES ('$name', '$brand', '$category', $mrp, $price, '$description', '$primary_image_url', '$all_urls_string')"; 
+        if (session_status() === PHP_SESSION_NONE) { session_start(); }
+        $added_by = mysqli_real_escape_string($conn, $_SESSION['admin_name'] ?? 'System Admin');
+        $sql = "INSERT INTO products (name, brand, category, mrp, price, description, image_url, image_urls, added_by) 
+                VALUES ('$name', '$brand', '$category', $mrp, $price, '$description', '$primary_image_url', '$all_urls_string', '$added_by')"; 
         if (mysqli_query($conn, $sql)) { 
             $product_id = mysqli_insert_id($conn);
 

@@ -6,6 +6,28 @@ if (!$conn) {
 mysqli_query($conn, "CREATE DATABASE IF NOT EXISTS `perfume_hub` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci");
 mysqli_select_db($conn, "perfume_hub");
 
+// Auto-setup database tables if they do not exist
+$chk_table = mysqli_query($conn, "SHOW TABLES LIKE 'products'");
+if ($chk_table && mysqli_num_rows($chk_table) == 0) {
+    $schemaFile = __DIR__ . '/database/database_schema.sql';
+    if (file_exists($schemaFile)) {
+        $sql = file_get_contents($schemaFile);
+        if (mysqli_multi_query($conn, $sql)) {
+            do {
+                if ($res = mysqli_store_result($conn)) {
+                    mysqli_free_result($res);
+                }
+            } while (mysqli_next_result($conn));
+        }
+    }
+} else {
+    // Verify added_by column exists
+    $chk_col = mysqli_query($conn, "SHOW COLUMNS FROM `products` LIKE 'added_by'");
+    if ($chk_col && mysqli_num_rows($chk_col) == 0) {
+        mysqli_query($conn, "ALTER TABLE `products` ADD COLUMN `added_by` VARCHAR(100) DEFAULT 'System Admin'");
+    }
+}
+
 if (!function_exists('optimize_image_url')) {
     function optimize_image_url($url, $type = 'thumbnail') {
         if (empty($url)) return 'https://images.unsplash.com/photo-1594035910387-fea47794261f?w=300';

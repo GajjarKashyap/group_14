@@ -25,6 +25,29 @@ function getPDO() {
                 PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
                 PDO::ATTR_EMULATE_PREPARES => false
             ]);
+
+            // Auto-setup database tables if they do not exist
+            $tableExists = false;
+            try {
+                $q = $pdo->query("SELECT 1 FROM `products` LIMIT 1");
+                $tableExists = true;
+            } catch (Exception $e) {
+                $tableExists = false;
+            }
+
+            if (!$tableExists) {
+                $schemaFile = __DIR__ . '/../database/database_schema.sql';
+                if (file_exists($schemaFile)) {
+                    $sql = file_get_contents($schemaFile);
+                    $pdo->exec($sql);
+                }
+            } else {
+                // Verify added_by column exists
+                $chkCol = $pdo->query("SHOW COLUMNS FROM `products` LIKE 'added_by'");
+                if ($chkCol->rowCount() == 0) {
+                    $pdo->exec("ALTER TABLE `products` ADD COLUMN `added_by` VARCHAR(100) DEFAULT 'System Admin'");
+                }
+            }
         } catch (PDOException $e) {
             die("Database Connection Error: " . $e->getMessage());
         }
